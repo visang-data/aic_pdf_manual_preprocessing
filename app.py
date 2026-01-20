@@ -18,7 +18,7 @@ VLLM_API_KEY = os.getenv("VLLM_API_KEY", "EMPTY")
 PDF_DATA_DIR = "test_pdf_data"
 
 # Default Prompts (Matches CLI)
-SYSTEM_PROMPT = """당신은 기업의 **모든 사내 업무 매뉴얼(Internal Business Manuals)**을 텍스트 데이터베이스로 구축하는 **전문 테크니컬 라이터(Technical Writer)**입니다.
+SYSTEM_PROMPT_DEFAULT = """당신은 기업의 **모든 사내 업무 매뉴얼(Internal Business Manuals)**을 텍스트 데이터베이스로 구축하는 **전문 테크니컬 라이터(Technical Writer)**입니다.
 주어지는 이미지는 인사 규정,  IT 가이드, 재무 보고서, 안전 수칙, 운영 절차서(SOP) 등 다양한 사내 문서의 한 페이지입니다.
 
 당신의 목표는 이미지 내의 정보를 시각적 요소 없이 오직 **'업무적 의미'와 '실질적 내용'**에 집중하여 구조화된 Markdown 문서로 완벽하게 변환하는 것입니다.
@@ -42,7 +42,7 @@ SYSTEM_PROMPT = """당신은 기업의 **모든 사내 업무 매뉴얼(Internal
 - 문서의 위계(장, 절, 항)를 파악하여 적절한 **Markdown Header (#, ##, ###)**를 적용하십시오.
 - 본문 내용은 명확한 문단으로 구분하여 가독성을 높이십시오."""
 
-USER_PROMPT = """제공된 매뉴얼 페이지를 분석하여 DB 적재를 위한 **완벽한 Markdown 포맷**으로 출력해 주세요.
+USER_PROMPT_DEFAULT = """제공된 매뉴얼 페이지를 분석하여 DB 적재를 위한 **완벽한 Markdown 포맷**으로 출력해 주세요.
 
 **[필수 수행 과제]**
 1. **완전한 텍스트 추출:** 페이지 내의 모든 업무 관련 텍스트(본문, 주석, 캡션 포함)를 누락 없이 전사하십시오.
@@ -72,7 +72,7 @@ st.markdown("""
 
 def get_base64_image(pix):
     """Convert PyMuPDF binary data to base64 string"""
-    data = pix.tobytes("png")
+    data = pix.tobytes("jpg", jpg_quality=90)
     return base64.b64encode(data).decode('utf-8')
 
 def parse_model_output(text):
@@ -99,6 +99,9 @@ def parse_model_output(text):
     return thinking, response
 
 def process_page_with_qwen(system_prompt, user_prompt, base64_image, previous_context=""):
+    """
+    Returns a stream object from OpenAI client.
+    """
     client = OpenAI(
         api_key=VLLM_API_KEY,
         base_url=VLLM_BASE_URL,
@@ -142,30 +145,20 @@ def process_page_with_qwen(system_prompt, user_prompt, base64_image, previous_co
     }
 
     try:
-        print("⏳ Sending request to VLLM...")
-        start_time = time.time()
-        response = client.chat.completions.create(
+        print("⏳ Sending request to VLLM (Stream Mode)...")
+        # Ensure stream=True
+        stream = client.chat.completions.create(
             model=VLLM_MODEL,
             messages=messages,
-            temperature=0.0,  # CLI uses 0.0
-            max_tokens=8192,  # CLI uses 8192
-            extra_body=extra_body
+            temperature=0.0,
+            max_tokens=8192,
+            extra_body=extra_body,
+            stream=True
         )
-        elapsed = time.time() - start_time
-        print(f"✅ Response received in {elapsed:.2f}s")
-        
-        raw_content = response.choices[0].message.content
-        thinking, final_response = parse_model_output(raw_content)
-        
-        print(f"🧠 Thinking: {len(thinking)} chars")
-        print(f"📄 Response: {len(final_response)} chars")
-        if thinking:
-            print(f"--- Thinking Preview ---\n{thinking[:200]}...\n------------------------")
-        
-        return thinking, final_response
+        return stream
     except Exception as e:
         print(f"❌ Error: {e}")
-        return "", f"Error: {e}"
+        return None
 
 def list_pdf_files():
     if not os.path.exists(PDF_DATA_DIR):
@@ -173,11 +166,30 @@ def list_pdf_files():
         return []
     return [f for f in os.listdir(PDF_DATA_DIR) if f.lower().endswith('.pdf')]
 
-def render_pdf_page(pdf_path, page_num):
+def render_pdf_page(pdf_path, page_num, target_long_side=1280):
+    """
+    Render a page to a target pixel size (long side).
+    Ensures doc is closed to prevent memory leaks.
+    """
     doc = fitz.open(pdf_path)
-    page = doc.load_page(page_num)
-    pix = page.get_pixmap(matrix=fitz.Matrix(1, 1)) # 1x1 Matrix (per CLI)
-    return pix
+    try:
+        page = doc.load_page(page_num)
+        
+        # Calculate zoom to match target_long_side
+        page_w, page_h = page.rect.width, page.rect.height
+        max_dim = max(page_w, page_h)
+        
+        # Avoid dividing by zero and ensure target size
+        if max_dim > 0:
+            zoom = target_long_side / max_dim
+        else:
+            zoom = 1.0
+            
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat)
+        return pix
+    finally:
+        doc.close()
 
 def main():
     st.title("👁️ Visual PDF Preprocessor")
@@ -267,20 +279,70 @@ def main():
                 
                 # Column 1: Thumbnail
                 with cols[0]:
-                    st.image(pix.tobytes("png"), caption=f"Page {i+1}", use_container_width=True)
+                    st.image(pix.tobytes("jpg", jpg_quality=90), caption=f"Page {i+1}", use_container_width=True)
                 
                 # Column 2: Processing...
                 with cols[1]:
-                    with st.spinner("Analyzing..."):
-                        # Pass context from previous page (last_page_text)
-                        thinking, page_result = process_page_with_qwen(system_prompt, user_prompt, base64_img, previous_context=last_page_text)
+                    # Create UI elements for streaming
+                    thinking_expander = st.expander("🧠 Thinking Process", expanded=True)
+                    thinking_placeholder = thinking_expander.empty()
                     
-                    if thinking:
-                        with st.expander(f"🧠 Thinking Process", expanded=False):
-                             st.code(thinking, language='text')
-                             
                     st.markdown("**📄 Extracted Content:**")
-                    st.text_area(f"Output p{i+1}", value=page_result, height=200, label_visibility="collapsed")
+                    response_placeholder = st.empty()
+                    
+                    # Prepare for streaming
+                    full_thinking = ""
+                    full_response = ""
+                    current_mode = "thinking" # thinking | response
+                    
+                    # Start Stream
+                    stream = process_page_with_qwen(system_prompt, user_prompt, base64_img, previous_context=last_page_text)
+                    
+                    if stream:
+                        for chunk in stream:
+                            # Safely get content delta
+                            if chunk.choices and chunk.choices[0].delta.content:
+                                content = chunk.choices[0].delta.content
+                                
+                                # Check for transition: </think>
+                                if "</think>" in content:
+                                    parts = content.split("</think>")
+                                    
+                                    # First part goes to thinking
+                                    full_thinking += parts[0]
+                                    thinking_placeholder.code(full_thinking.replace("<think>", "").strip(), language='text')
+                                    
+                                    # Switch mode
+                                    current_mode = "response"
+                                    
+                                    # Second part goes to response
+                                    if len(parts) > 1:
+                                        full_response += parts[1]
+                                        response_placeholder.markdown(full_response + "▌")
+                                        
+                                    # Collapse thinking after done
+                                    # thinking_expander.update(expanded=False) # Not directly possible in streamlit loop easily without rerun, ignore
+                                    
+                                else:
+                                    if current_mode == "thinking":
+                                        full_thinking += content
+                                        # Only update thinking occasionally or it flickers? code block handles it well
+                                        thinking_placeholder.code(full_thinking.replace("<think>", "").strip() + "▌", language='text')
+                                    else:
+                                        full_response += content
+                                        response_placeholder.markdown(full_response + "▌")
+                                        
+                        # Final update to remove cursor
+                        if current_thinking := full_thinking.replace("<think>", "").strip():
+                            thinking_placeholder.code(current_thinking, language='text')
+                        response_placeholder.markdown(full_response)
+                        
+                        # Set page result for next loop/storage
+                        page_result = full_response
+                        thinking = full_thinking
+                    else:
+                        st.error("Failed to connect to model.")
+                        page_result = ""
             
             st.divider()
             
@@ -308,7 +370,7 @@ def main():
                 f.write(st.session_state['combined_result'])
             st.success(f"Saved to {output_filename}")
             
-        if st.button("� Clear Results"):
+        if st.button(" Clear Results"):
              del st.session_state['combined_result']
              st.rerun()
     else:
@@ -316,7 +378,7 @@ def main():
         st.subheader(f"📄 Document Preview ({total_pages} pages)")
         page_num = st.slider("Preview Page", min_value=1, max_value=total_pages, value=1) - 1
         pix = render_pdf_page(current_pdf_path, page_num)
-        st.image(pix.tobytes("png"), caption=f"Page {page_num + 1} / {total_pages}", use_container_width=True)
+        st.image(pix.tobytes("jpg", jpg_quality=90), caption=f"Page {page_num + 1} / {total_pages}", use_container_width=True)
 
 if __name__ == "__main__":
     main()
