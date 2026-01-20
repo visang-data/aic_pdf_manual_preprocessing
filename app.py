@@ -364,11 +364,13 @@ def main():
         st.subheader("📑 Combined Document Output")
         st.text_area("Full Document Markdown", value=st.session_state['combined_result'], height=800)
         
-        if st.button("💾 Save All to .txt"):
-            output_filename = f"processed_{os.path.basename(current_pdf_path).replace('.pdf', '')}_FULL.txt"
-            with open(os.path.join(PDF_DATA_DIR, output_filename), "w") as f:
-                f.write(st.session_state['combined_result'])
-            st.success(f"Saved to {output_filename}")
+        st.download_button(
+            label="💾 Download Full Result (.txt)",
+            data=st.session_state['combined_result'],
+            file_name=f"processed_{os.path.basename(current_pdf_path).replace('.pdf', '')}_FULL.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
             
         if st.button(" Clear Results"):
              del st.session_state['combined_result']
