@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: pdf-manual:latest
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/workspace
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    command: streamlit run app.py

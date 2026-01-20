@@ -1,0 +1,16 @@
+IMAGE_NAME=pdf-manual
+TAG=latest
+DOCKERFILE=Dockerfile.dev
+PORT=8501
+
+.PHONY: build run
+
+build:
+	docker build -f $(DOCKERFILE) -t $(IMAGE_NAME):$(TAG) .
+
+run:
+	docker run -it --rm \
+		-p $(PORT):8501 \
+		-v $$(pwd):/workspace \
+		$(IMAGE_NAME):$(TAG) \
+		/bin/bash

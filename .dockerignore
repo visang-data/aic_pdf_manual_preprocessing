@@ -1,0 +1,6 @@
+.git
+.gitignore
+.venv
+__pycache__
+test_pdf_data
+.DS_Store
