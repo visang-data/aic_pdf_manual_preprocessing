@@ -1,0 +1,18 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.env
+
+# Streamlit
+.streamlit/
+
+# OS
+.DS_Store
+
+# Project Logic
+process_pdf_cli.py
+test_pdf_data/
